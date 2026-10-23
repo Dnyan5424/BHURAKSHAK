@@ -10,8 +10,32 @@ from ..security import db,hp,make_token,user,need
 from ..config import DISCLAIMER
 from .. import services as sv
 BASE=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DECISIONS={"Legal / Permitted Change":"Legal / Permitted Change","Potential Violation":"Potential Violation","False Positive":"False Positive","Needs More Evidence":"Under Field Verification","Closed":"Closed"}
-CAT2PORTAL={"Tree cutting or vegetation loss":"forest_loss","Quarrying or excavation suspicion":"mining","Illegal construction suspicion":"construction","River, lake, or water-body encroachment":"water_encroachment"}
+DECISIONS = {
+    "Legal / Permitted": "Legal / Permitted",
+    "Legal / Permitted Change": "Legal / Permitted",
+    "Potential Violation": "Potential Violation",
+    "False Alarm": "False Alarm",
+    "False Positive": "False Alarm",
+    "Need More Checking": "Under Field Verification",
+    "Needs More Evidence": "Under Field Verification",
+    "Closed": "Closed",
+}
+CAT2PORTAL = {
+    "Tree Cutting": "forest_loss",
+    "Tree cutting or vegetation loss": "forest_loss",
+    "Quarrying / Excavation": "mining",
+    "Quarrying or excavation suspicion": "mining",
+    "Encroachment": "construction",
+    "Encroachment suspicion": "construction",
+    "New Construction": "construction",
+    "Illegal construction suspicion": "construction",
+    "Water Body Issue": "water_encroachment",
+    "River, lake, or water-body encroachment": "water_encroachment",
+    "Sand mining suspicion": "mining",
+    "Waste dumping": "general",
+    "Other": "general",
+    "Other environmental issue": "general",
+}
 def D(d,g=None):
     o={"id":d.id,"change_type":d.change_type,"area_hectares":d.area_hectares,"confidence":d.confidence,"risk_score":d.risk_score,"risk_level":d.risk_level,
        "polygon":json.loads(d.polygon_geojson),"status":d.status,"ndvi_difference":d.ndvi_difference,"ndwi_difference":d.ndwi_difference,
@@ -22,7 +46,8 @@ def case_out(c,s):
     d=s.get(Detection,c.change_detection_id);o=D(d,s.query(Gis).filter_by(change_detection_id=d.id).first())
     pe=s.get(Petition,c.petition_id) if c.petition_id else None
     return o|{"case_id":c.id,"case_status":c.status,"decision":c.officer_decision,"remarks":c.officer_remarks,"permit_reference":c.permit_reference,
-              "petition":{"code":pe.petition_code,"category":pe.category,"description":pe.description} if pe else None}
+              "field_photo_url":c.field_photo_url,
+              "petition":{"code":pe.petition_code,"category":pe.category,"description":pe.description,"photo_url":pe.photo_url,"village_city":pe.village_city,"district":pe.district,"created_at":pe.created_at.isoformat() if pe and pe.created_at else None} if pe else None}
 def rows_for(i,s):
     c=s.get(Case,i)
     if not c:raise HTTPException(404)

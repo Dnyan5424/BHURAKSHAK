@@ -19,3 +19,11 @@ venv/
 /backend/*.db-journal
 /backend/data/uploads/*
 !/backend/data/uploads/.gitkeep
+
+# Generated satellite data and reports
+/backend/data/raw/*
+!/backend/data/raw/.gitkeep
+/backend/data/processed/*
+!/backend/data/processed/.gitkeep
+/backend/data/reports/*
+!/backend/data/reports/.gitkeep
