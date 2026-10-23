@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BhuRakshak</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>:root{--g:#1B4332;--b:#D8D3C8}*{box-sizing:border-box}body{margin:0;font:15px "IBM Plex Sans",Inter,sans-serif;color:#1F2937;background:#F7F5F0}
+header{background:var(--g);color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}header b{font-size:18px}
+main{display:grid;grid-template-columns:320px 1fr 340px;height:calc(100vh - 52px)}aside{background:#fff;overflow:auto;padding:16px}#l{border-right:1px solid var(--b)}#r{border-left:1px solid var(--b)}
+#map{height:100%}.c{border:1px solid var(--b);border-radius:10px;padding:12px;margin:0 0 8px;cursor:pointer}.c:focus,.c:hover{border-color:var(--g);outline:2px solid #74C69D}
+.m{font-family:"IBM Plex Mono",monospace;font-size:12px;color:#4B5563}.bd{display:inline-block;padding:2px 8px;border-radius:6px;color:#fff;font-size:12px}
+input,select,textarea,button{width:100%;min-height:44px;margin:4px 0;border:1px solid var(--b);border-radius:6px;padding:8px;font:inherit}button{background:var(--g);color:#fff;border:0;cursor:pointer}
+.d{font-size:12px;border-left:3px solid #1D3557;padding-left:8px;margin:12px 0}details{margin-top:12px}@media(max-width:900px){main{display:block;height:auto}#map{height:50vh}}</style></head><body>
+<header><b>BhuRakshak</b><span class="m">DEMO DATA — synthetic, simulated study area</span></header>
+<main><aside id="l"><h3>Evidence under review</h3><div id="list"></div>
+<details><summary>Report a suspected land-use change</summary><p class="m">Click the map to set the location.</p>
+<select id="cat"><option>Tree cutting or vegetation loss</option><option>Quarrying or excavation suspicion</option><option>Illegal construction suspicion</option><option>River, lake, or water-body encroachment</option><option>Other environmental issue</option></select>
+<input id="vc" placeholder="Village / city"><input id="dt" placeholder="District"><input id="mb" placeholder="Mobile"><textarea id="ds" placeholder="What did you notice?"></textarea>
+<label><input type="checkbox" id="cs" style="width:auto;min-height:0"> I consent to this report being reviewed</label><button onclick="send()">Submit report</button><p id="out" class="m"></p></details>
+<details><summary>Track a petition</summary><input id="tc" placeholder="PET-2025-00001"><input id="tm" placeholder="Mobile"><button onclick="track()">Track</button><p id="to" class="m"></p></details></aside>
+<div id="map"></div><aside id="r"><p class="m">Select a polygon or a case.</p></aside></main>
+<script>const col={Low:"#74C69D",Moderate:"#F4D35E",High:"#F77F00",Critical:"#9B2226"};let pin,map=L.map("map").setView([18.55,73.855],15);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"Map data © OpenStreetMap contributors, ODbL"}).addTo(map);
+map.on("click",e=>{pin&&pin.remove();pin=L.marker(e.latlng).addTo(map)});
+const j=(u,o)=>fetch(u,o).then(r=>r.json());
+async function load(){const ds=await j("/api/change-detections");list.innerHTML="";ds.forEach(d=>{const p=L.geoJSON(d.polygon,{color:col[d.risk_level],fillOpacity:.35}).addTo(map).on("click",()=>show(d.id));
+const c=document.createElement("div");c.className="c";c.tabIndex=0;c.innerHTML=`<span class="bd" style="background:${col[d.risk_level]};color:${d.risk_level=="Moderate"?"#000":"#fff"}">${d.risk_level}</span> <b>${d.change_type}</b><div class="m">#${d.id} · ${d.area_hectares} ha · ${d.confidence}% · ${d.status}</div>`;
+c.onclick=()=>{map.fitBounds(p.getBounds());show(d.id)};list.append(c)})}
+async function show(i){const d=await j("/api/change-detections/"+i),g=d.gis;document.getElementById("r").innerHTML=`<h3>${d.change_type}</h3><p class="m">Case ${d.id} · ${d.area_hectares} ha · confidence ${d.confidence}% · risk ${d.risk_score}</p>
+<p><b>Why this was flagged</b><br>${d.why_flagged}</p><p class="m">ΔNDVI ${d.ndvi_difference.toFixed(2)} · ΔNDWI ${d.ndwi_difference.toFixed(2)} · ΔNDBI ${d.ndbi_difference.toFixed(2)} · ΔBSI ${d.bsi_difference.toFixed(2)}</p>
+<p><b>GIS context</b><br>${g.explanation}</p><p class="m">Status: ${d.status}</p><div class="d">${d.disclaimer}</div><p class="m">Officer decisions and PDF reports: sign in at /docs (officer@demo.com).</p>`}
+async function send(){if(!pin)return out.textContent="Click the map first.";const p=pin.getLatLng(),r=await j("/api/petitions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({latitude:p.lat,longitude:p.lng,village_city:vc.value,district:dt.value,category:cat.value,description:ds.value,mobile:mb.value,consent_given:cs.checked})});out.textContent=r.petition_code?`Petition ID ${r.petition_code} — ${r.status}`:JSON.stringify(r)}
+async function track(){const r=await j(`/api/petitions/track/${tc.value}?mobile=${tm.value}`);to.textContent=r.status?`${r.status}. ${r.next_step}`:(r.detail||"Not found")}
+load()</script></body></html>

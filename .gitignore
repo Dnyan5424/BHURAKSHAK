@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Frontend dependencies and build output
+/frontend/node_modules/
+/frontend/dist/
+
+# Local database and runtime uploads
+/backend/bhurakshak.db
+/backend/*.db-journal
+/backend/data/uploads/*
+!/backend/data/uploads/.gitkeep

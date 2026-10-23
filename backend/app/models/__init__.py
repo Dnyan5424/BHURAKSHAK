@@ -1,0 +1,13 @@
+from sqlalchemy import *
+from datetime import datetime
+from ..database import T,B
+now=datetime.utcnow
+User=T("User",name=Column(String),mobile=Column(String),email=Column(String,unique=True),password_hash=Column(String),role=Column(String,default="citizen"),created_at=Column(DateTime,default=now))
+Petition=T("Petition",petition_code=Column(String,unique=True),user_id=Column(Integer),mobile=Column(String),latitude=Column(Float),longitude=Column(Float),village_city=Column(String),district=Column(String),category=Column(String),description=Column(Text),photo_url=Column(String),status=Column(String,default="Submitted"),is_anonymous=Column(Boolean,default=False),consent_given=Column(Boolean),detection_id=Column(Integer),created_at=Column(DateTime,default=now),updated_at=Column(DateTime,default=now,onupdate=now))
+Scene=T("Scene",study_area_name=Column(String),image_type=Column(String),scene_date=Column(String),source=Column(String),sensor=Column(String),cloud_cover_percent=Column(Float),spatial_resolution=Column(String),image_url=Column(String),created_at=Column(DateTime,default=now))
+Detection=T("Detection",before_scene_id=Column(Integer),after_scene_id=Column(Integer),change_type=Column(String),area_hectares=Column(Float),confidence=Column(Float),risk_score=Column(Float),risk_level=Column(String),polygon_geojson=Column(Text),ndvi_difference=Column(Float),ndwi_difference=Column(Float),ndbi_difference=Column(Float),bsi_difference=Column(Float),status=Column(String),evidence=Column(Text),created_at=Column(DateTime,default=now))
+Gis=T("Gis",change_detection_id=Column(Integer),distance_to_water_m=Column(Float),distance_to_road_m=Column(Float),distance_to_forest_m=Column(Float),near_protected_area=Column(Boolean),existing_lulc_class=Column(String),explanation=Column(Text))
+Case=T("Case",petition_id=Column(Integer),change_detection_id=Column(Integer),assigned_officer_id=Column(Integer),status=Column(String),officer_decision=Column(String),officer_remarks=Column(Text),permit_reference=Column(String),field_photo_url=Column(String),decision_date=Column(DateTime),created_at=Column(DateTime,default=now))
+Evidence=T("Evidence",case_id=Column(Integer),scene_id=Column(Integer),original_filename=Column(String),storage_path=Column(String),media_type=Column(String),evidence_type=Column(String),captured_at=Column(String),latitude=Column(Float),longitude=Column(Float),uploaded_by=Column(Integer),created_at=Column(DateTime,default=now))
+Portal=T("Portal",category=Column(String),department_name=Column(String),portal_name=Column(String),portal_url=Column(String),required_documents=Column(Text),last_verified_date=Column(String))
+Notification=T("Notification",mobile=Column(String),message=Column(Text),created_at=Column(DateTime,default=now))
