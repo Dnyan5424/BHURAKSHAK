@@ -10,4 +10,11 @@ export default function MapView({dets=[],selected,onSelect,overlay,onPick,pin,dr
  useEffect(()=>{area.current?.clearLayers();if(drawPolygon.length>1){const points=drawPolygon.map((p:any)=>[p.lat,p.lng] as L.LatLngTuple);if(drawPolygon.length>2)L.polygon(points,{color:"#1D3557",weight:3,fillColor:"#74C69D",fillOpacity:.18,dashArray:"6 5",interactive:false}).addTo(area.current!);else L.polyline(points,{color:"#1D3557",weight:3,dashArray:"6 5",interactive:false}).addTo(area.current!);drawPolygon.forEach((p:any)=>L.circleMarker(p,{radius:4,color:"#1D3557",fillColor:"#fff",fillOpacity:1,weight:2,interactive:false}).addTo(area.current!))}},[drawPolygon]);
  useEffect(()=>{const d=dets.find((x:any)=>x.id==selected);if(d)m.current!.fitBounds(L.geoJSON(d.polygon).getBounds().pad(2))},[selected]);
  return <div ref={el} style={{height}} className="w-full" role="application" aria-label="Map"/>}
-export const Legend=()=><div className="flex flex-wrap gap-3 text-xs">{Object.entries(RISK).map(([k,c])=><span key={k} className="flex items-center gap-1"><i style={{background:c}} className="w-3 h-3 inline-block rounded-sm"/>{k}</span>)}</div>;
+export const Legend = () => (
+  <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-semibold text-ink">
+    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full bg-[#2D6A4F]" />Normal</span>
+    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full bg-[#D97706]" />Needs Checking</span>
+    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full bg-[#E76F00]" />High Attention</span>
+    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full bg-[#9B2226]" />Critical</span>
+  </div>
+);

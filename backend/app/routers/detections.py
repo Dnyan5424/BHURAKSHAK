@@ -10,10 +10,11 @@ from fastapi.responses import Response
 from shapely.geometry import shape
 
 from .. import services as sv
-from ..models import Case, Detection, Gis, Scene
+from ..models import Case, Detection, Gis, MonitoringGrid, Scene
 from ..schemas import RunReq
 from ..security import db, need
 from ..utils.helpers import BASE, D
+from ..services.gis_service import load_context_layers
 
 router = APIRouter()
 MAX_SCENE_BYTES = 200 * 1024 * 1024
@@ -73,8 +74,9 @@ async def upload(
     cloud_cover_percent: float = Form(0),
     source: str = Form("Copernicus Data Space"),
     spatial_resolution: str = Form("10 m"),
+    grid_id: str | None = Form(None),
     file: UploadFile = File(...),
-    u=Depends(need("admin")),
+    u=Depends(need("officer", "admin")),
     s=Depends(db),
 ):
     extension = os.path.splitext(file.filename or "")[1].lower()
@@ -99,16 +101,30 @@ async def upload(
     if len(contents) > MAX_SCENE_BYTES:
         raise HTTPException(413, "Scene file must be smaller than 200 MB")
 
-    directory = os.path.join(BASE, "data", "raw")
+    directory = os.path.join(BASE, "data", "raw", "compact")
     os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, f"scene_{uuid.uuid4().hex}{extension}")
+    original_path = os.path.join(directory, f"upload_{uuid.uuid4().hex}{extension}")
+    path = os.path.splitext(original_path)[0] + ".npz"
+    boundary = None
+    if grid_id:
+        grid = s.query(MonitoringGrid).filter_by(grid_id=grid_id, active=True, grid_size_m=1000).first()
+        if not grid:
+            raise HTTPException(404, "Selected 1 km monitoring grid not found")
+        boundary = json.loads(grid.geometry_geojson)
+        study_area_name = grid.grid_id
     try:
-        with open(path, "wb") as scene_file:
+        with open(original_path, "wb") as scene_file:
             scene_file.write(contents)
-        bands, warning = sv.load(path)
+        bands, warning = sv.load(original_path, boundary=boundary)
+        np.savez_compressed(path, **{
+            name: np.rint(np.clip(values, 0, 1) * 10000).astype("uint16")
+            for name, values in bands.items()
+        })
+        os.remove(original_path)
     except (ValueError, KeyError, OSError) as exc:
-        if os.path.exists(path):
-            os.remove(path)
+        for candidate in (original_path, path):
+            if os.path.exists(candidate):
+                os.remove(candidate)
         raise HTTPException(422, "Could not read this satellite raster. Upload a valid multiband .npz or GeoTIFF.") from exc
 
     scene = Scene(
@@ -120,14 +136,18 @@ async def upload(
         cloud_cover_percent=cloud_cover_percent,
         spatial_resolution=spatial_resolution.strip(),
         image_url=path,
+        provider="local upload",
+        source_type="uploaded",
+        download_status="complete",
+        processing_status="ready",
     )
     s.add(scene)
     s.commit()
-    return {"scene_id": scene.id, "warning": warning}
+    return {"scene_id": scene.id, "warning": warning, "storage_format": "compressed uint16 NPZ", "stored_bytes": os.path.getsize(path)}
 
 
 @router.post("/api/change-detection/run")
-def run(r: RunReq, u=Depends(need("admin")), s=Depends(db)):
+def run(r: RunReq, u=Depends(need("officer", "admin")), s=Depends(db)):
     if r.before_scene_id == r.after_scene_id:
         raise HTTPException(422, "Choose two different scenes for comparison")
     before, after = s.get(Scene, r.before_scene_id), s.get(Scene, r.after_scene_id)
@@ -175,11 +195,7 @@ def run(r: RunReq, u=Depends(need("admin")), s=Depends(db)):
         if not analysis_boundary.intersects(raster_bounds):
             raise HTTPException(422, "The selected polygon does not overlap the raster analysis extent")
 
-    layers_path = os.path.join(BASE, "data", "raw", "demo_layers.json")
-    if not os.path.exists(layers_path):
-        raise HTTPException(503, "GIS context layers are unavailable")
-    with open(layers_path, encoding="utf-8") as layers_file:
-        layers = json.load(layers_file)
+    layers = load_context_layers()
     rows = sv.run_detection(
         s,
         before_bands,
@@ -204,12 +220,13 @@ def run(r: RunReq, u=Depends(need("admin")), s=Depends(db)):
 
 @router.get("/api/scenes")
 def scenes(s=Depends(db)):
-    layers_path = os.path.join(BASE, "data", "raw", "demo_layers.json")
-    with open(layers_path, encoding="utf-8") as layers_file:
-        origin = json.load(layers_file)["origin"]
+    fallback_origin = load_context_layers().get("origin", [73.85, 18.55])
     count, pixel_size = 120, 9e-5
-    return [
-        {
+    result = []
+    for scene in s.query(Scene).order_by(Scene.scene_date).all():
+        metadata = json.loads(scene.provider_metadata or "{}")
+        origin = metadata.get("analysis_origin") or fallback_origin
+        result.append({
             "id": scene.id,
             "study_area_name": scene.study_area_name,
             "image_type": scene.image_type,
@@ -220,9 +237,8 @@ def scenes(s=Depends(db)):
             "spatial_resolution": scene.spatial_resolution,
             "preview": f"/api/scenes/{scene.id}/preview",
             "bounds": [[origin[1] - count * pixel_size, origin[0]], [origin[1], origin[0] + count * pixel_size]],
-        }
-        for scene in s.query(Scene).order_by(Scene.scene_date).all()
-    ]
+        })
+    return result
 
 
 @router.get("/api/scenes/{i}/preview")

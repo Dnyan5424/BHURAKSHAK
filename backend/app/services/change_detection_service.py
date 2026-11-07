@@ -49,13 +49,24 @@ def detect(b,a,origin,px=9e-5,d=None,boundary=None):
     return out
 def run_detection(s,b,a,origin,layers,bid,aid,boundary=None):
     b,a=align(b,a);cloud=max(cloud_fraction(b),cloud_fraction(a));d=change_maps(b,a)
-    save_processed(b,f"before_{bid}");save_processed(a,f"after_{aid}")
+    before_path=save_processed(b,f"before_{bid}");after_path=save_processed(a,f"after_{aid}")
     os.makedirs(PROC,exist_ok=True);save_geotiff(os.path.join(PROC,f"change_{bid}_{aid}.tif"),d,origin)
     res=[]
     for x in detect(b,a,origin,d=d,boundary=boundary):
         g=gis_context(x["polygon"],layers);conf,pr,lvl=score(x,g,quality=1-cloud,cloud=1-cloud)
+        evidence=json.dumps({
+            "summary": explain(x,g,lvl),
+            "changed_pixels": round(x["area_hectares"] * 10000),
+            "changed_area_hectares": x["area_hectares"],
+            "cloud_fraction_percent": round(cloud * 100, 3),
+            "valid_pixel_coverage_percent": round((1 - cloud) * 100, 3),
+            "spectral_differences": x["diffs"],
+            "processed_before": os.path.basename(before_path),
+            "processed_after": os.path.basename(after_path),
+            "confidence_percent": conf,
+        }, separators=(",", ":"))
         row=Detection(before_scene_id=bid,after_scene_id=aid,change_type=x["change_type"],area_hectares=x["area_hectares"],confidence=conf,risk_score=pr,risk_level=lvl,
             polygon_geojson=json.dumps(x["polygon"]),ndvi_difference=x["diffs"]["ndvi"],ndwi_difference=x["diffs"]["ndwi"],ndbi_difference=x["diffs"]["ndbi"],bsi_difference=x["diffs"]["bsi"],
-            status="Needs verification",evidence=explain(x,g,lvl));s.add(row);s.flush()
+            status="Needs verification",evidence=evidence);s.add(row);s.flush()
         s.add(Gis(change_detection_id=row.id,**g));s.add(Case(change_detection_id=row.id,status="Needs verification"));res.append(row)
     s.commit();return res

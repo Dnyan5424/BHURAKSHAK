@@ -1,168 +1,255 @@
-import { useEffect, useMemo, useState } from "react";
-import { Navigate } from "react-router-dom";
-import { api, API, download, role } from "../api";
-import MapView from "../MapView";
-import { Button, Card, EmptyState, EvidencePanel, FileUploader, FormField, RiskBadge, StatusBadge } from "../ui";
-
-const DECISIONS = ["Legal / Permitted Change", "Potential Violation", "False Positive", "Needs More Evidence", "Closed"];
-const riskOrder: Record<string, number> = { Critical: 0, High: 1, Moderate: 2, Low: 3 };
+import { useEffect, useState, useMemo } from "react";
+import { Link, Navigate, useNavigate } from "react-router-dom";
+import { api, role } from "../api";
+import { Button, AttentionBadge, StatusBadge, EmptyState } from "../ui";
+import {
+  IconShieldCheck,
+  IconSearch,
+  IconMapSheet,
+  IconFileDoc,
+  IconPin,
+  TopoLinesGraphic,
+} from "../icons";
 
 export default function Officer() {
   const [cases, setCases] = useState<any[]>([]);
-  const [selected, setSelected] = useState<any>();
-  const [caseEvidence, setCaseEvidence] = useState<any[]>([]);
-  const [scenes, setScenes] = useState<any[]>([]);
-  const [view, setView] = useState("after");
-  const [form, setForm] = useState<any>({ decision: DECISIONS[3], remarks: "", permit_reference: "", recommended_action: "" });
-  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [riskFilter, setRiskFilter] = useState("All");
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [filter, setFilter] = useState("All");
+  const [query, setQuery] = useState("");
+  const [alerts, setAlerts] = useState<any[]>([]);
+  const [frequency, setFrequency] = useState({ frequency_minutes: 60, enabled: true });
+  const [savingFrequency, setSavingFrequency] = useState(false);
+  const navigate = useNavigate();
 
-  const selectCase = (item: any) => {
-    setSelected(item);
-    setForm({
-      decision: item?.decision || DECISIONS[3],
-      remarks: item?.remarks || "",
-      permit_reference: item?.permit_reference || "",
-      recommended_action: item?.recommended_action || "",
-    });
+  const currentRole = role();
+
+  const loadCases = () => {
+    setLoading(true);
     setError("");
+    api
+      .get("/api/officer/cases")
+      .then((res) => {
+        setCases(Array.isArray(res.data) ? res.data : []);
+      })
+      .catch(() => {
+        setError("Could not load officer case queue. Please check connection.");
+      })
+      .finally(() => setLoading(false));
   };
 
-  const loadCases = () => api.get("/api/officer/cases").then(response => {
-    setCases(response.data);
-    const current = response.data.find((item: any) => item.case_id === selected?.case_id) || response.data[0];
-    if (current) selectCase(current);
-  }).catch(() => setError("Unable to load the officer case queue. Please try again."));
-
   useEffect(() => {
-    if (!role()) return;
-    loadCases();
-    api.get("/api/scenes").then(response => setScenes(response.data)).catch(() => setError("Satellite scene metadata is temporarily unavailable."));
-  }, []);
+    if (currentRole === "officer" || currentRole === "admin") {
+      loadCases();
+      api.get("/api/officer/alerts").then((res) => setAlerts(Array.isArray(res.data) ? res.data : [])).catch(() => {});
+      api.get("/api/automatic-review").then((res) => setFrequency(res.data)).catch(() => {});
+    }
+  }, [currentRole]);
 
-  useEffect(() => {
-    if (!selected?.case_id) { setCaseEvidence([]); return; }
-    api.get(`/api/admin/cases/${selected.case_id}/evidence`)
-      .then(response => setCaseEvidence(response.data))
-      .catch(() => setError("Could not load collected evidence for this case."));
-  }, [selected?.case_id]);
+  if (!currentRole || currentRole === "citizen") {
+    return <Navigate to="/login" />;
+  }
 
-  const visibleCases = useMemo(() => cases
-    .filter(item => riskFilter === "All" || item.risk_level === riskFilter)
-    .sort((a, b) => (riskOrder[a.risk_level] ?? 4) - (riskOrder[b.risk_level] ?? 4)), [cases, riskFilter]);
+  const filteredCases = useMemo(() => {
+    return cases.filter((item) => {
+      const matchFilter =
+        filter === "All" ||
+        item.risk_level === filter ||
+        (filter === "Pending" && !item.decision);
+      const matchQuery =
+        !query ||
+        `CASE-${item.case_id} ${item.change_type} ${item.petition?.code || ""}`
+          .toLowerCase()
+          .includes(query.toLowerCase());
+      return matchFilter && matchQuery;
+    });
+  }, [cases, filter, query]);
 
-  if (!role() || role() === "citizen") return <Navigate to="/login" />;
-  const scene = scenes.find(item => item.image_type === view);
-  const setField = (key: string) => (event: any) => setForm((current: any) => ({ ...current, [key]: event.target.value }));
-  const needsPermit = form.decision === DECISIONS[0];
-  const needsAction = form.decision === DECISIONS[1];
-  const canSave = Boolean(selected && form.remarks.trim() && (!needsPermit || form.permit_reference.trim()) && (!needsAction || form.recommended_action.trim()));
+  const pendingCount = cases.filter((c) => !c.decision).length;
+  const criticalCount = cases.filter(
+    (c) => c.risk_level === "Critical" || c.risk_level === "High"
+  ).length;
 
-  async function saveDecision() {
-    setSaving(true);
+  const saveFrequency = async () => {
+    setSavingFrequency(true);
     setError("");
-    setMessage("");
     try {
-      await api.patch(`/api/officer/cases/${selected.case_id}/decision`, form);
-      setMessage("Decision saved and recorded.");
-      setConfirmOpen(false);
-      await loadCases();
-    } catch (saveError: any) {
-      setError(saveError.response?.data?.detail || "Could not save the decision. Please review the required fields and try again.");
-      setConfirmOpen(false);
+      await api.put("/api/automatic-review", frequency);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Could not save the acquisition schedule.");
     } finally {
-      setSaving(false);
+      setSavingFrequency(false);
     }
-  }
+  };
 
-  async function uploadFieldPhoto(file: File) {
-    if (!file || !selected) return;
-    setError("");
-    try {
-      const data = new FormData();
-      data.append("f", file);
-      await api.post(`/api/officer/cases/${selected.case_id}/field-report`, data);
-      setMessage("Field photo uploaded.");
-    } catch (uploadError: any) {
-      setError(uploadError.response?.data?.detail || "Could not upload the field photo.");
-    }
-  }
-
-  return <main className="page-enter mx-auto max-w-[1600px] p-4 sm:p-5">
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div><p className="text-xs font-bold uppercase tracking-[0.14em] text-gov">Officer workspace</p><h1 className="mt-1 text-2xl font-extrabold sm:text-3xl">Verification queue</h1><p className="mt-1 text-sm text-mute">Review evidence and record reasoned, accountable case decisions.</p></div>
-      <div className="flex gap-2 text-xs"><span className="rounded border border-line bg-white px-3 py-2 text-mute">Assigned <b className="ml-1 text-ink">{cases.length}</b></span><span className="rounded border border-[#F4B942] bg-[#FFF9E9] px-3 py-2 text-[#6B4B00]">High priority <b className="ml-1">{cases.filter(item => ["High", "Critical"].includes(item.risk_level)).length}</b></span></div>
-    </div>
-
-    {error && <div className="mb-4 flex items-center justify-between gap-2 rounded border border-red/30 bg-[#FFF5F3] px-3 py-2 text-sm text-red" role="alert"><span>{error}</span><button className="font-semibold underline" onClick={() => setError("")}>Dismiss</button></div>}
-    {message && <div className="mb-4 rounded border border-g2/30 bg-[#EFF7F0] px-3 py-2 text-sm text-g1" role="status">{message}</div>}
-
-    <div className="grid items-start gap-4 xl:grid-cols-[280px_minmax(0,1fr)_340px]">
-      <aside className="overflow-hidden rounded-xl border border-line bg-white">
-        <div className="border-b border-line p-4">
-          <div className="flex items-center justify-between"><h2 className="font-bold text-ink">Priority queue</h2><span className="font-mono text-xs text-mute">{visibleCases.length}</span></div>
-          <label className="mt-3 block"><span className="mb-1 block text-xs font-semibold text-mute">Filter by risk</span><select value={riskFilter} onChange={event => setRiskFilter(event.target.value)}>{["All", "Critical", "High", "Moderate", "Low"].map(value => <option key={value}>{value}</option>)}</select></label>
+  return (
+    <main className="page-enter mx-auto max-w-5xl px-4 py-6 sm:py-8">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 border-b border-[#D8D2C4] pb-4">
+        <div>
+          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-gov flex items-center gap-1.5">
+            <IconShieldCheck size={14} />
+            Field Verification Register
+          </span>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-g1 mt-0.5">
+            Officer Case Queue
+          </h1>
+          <p className="text-xs text-mute mt-0.5">
+            Inspect remote sensing detections and record on-ground enforcement decisions.
+          </p>
         </div>
-        <div className="max-h-[42vh] space-y-2 overflow-y-auto bg-[#FCFCFA] p-3 xl:max-h-[calc(100vh-300px)]">
-          {visibleCases.length === 0 ? <EmptyState>No cases in this queue.</EmptyState> : visibleCases.map(item =>
-            <button key={item.case_id} onClick={() => selectCase(item)} aria-pressed={selected?.case_id === item.case_id} className={`w-full rounded-lg border bg-white p-3 text-left transition hover:border-gov hover:shadow-sm ${selected?.case_id === item.case_id ? "border-gov ring-1 ring-gov/20" : "border-line"}`}>
-              <div className="flex items-center justify-between gap-2"><span className="font-mono text-xs font-bold text-mute">CASE-{item.case_id}</span><RiskBadge level={item.risk_level} /></div>
-              <p className="mt-2 text-sm font-bold text-ink">{item.change_type}</p>
-              <p className="mt-1 text-xs text-mute">Risk score {item.risk_score}</p>
-              <div className="mt-2"><StatusBadge status={item.case_status} /></div>
-            </button>
-          )}
-        </div>
-      </aside>
 
-      {selected ? <>
-        <section className="space-y-4">
-          <div className="relative h-[340px] overflow-hidden rounded-xl border border-line bg-white sm:h-[420px]">
-            <div className="absolute right-3 top-3 z-[500] flex gap-1 rounded-md border border-line bg-white p-1 shadow-sm">
-              {["before", "after"].map(value => <Button key={value} v={view === value ? "primary" : "ghost"} className="!min-h-[36px] capitalize !px-3 text-xs" onClick={() => setView(value)} aria-pressed={view === value}>{value}</Button>)}
-            </div>
-            <MapView dets={[selected]} selected={selected.id} overlay={scene && { url: API + scene.preview, bounds: scene.bounds }} />
+        {/* Counter Indicators */}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="rounded-[6px] border border-[#CBD8CC] bg-white px-3 py-1 font-semibold text-ink">
+            Assigned: <b>{cases.length}</b>
+          </span>
+          <span className="rounded-[6px] border border-[#EED7B3] bg-[#FCF4E7] px-3 py-1 font-semibold text-[#8A5314]">
+            Pending Decision: <b>{pendingCount}</b>
+          </span>
+          <span className="rounded-[6px] border border-[#F0BCBC] bg-[#FBE8E8] px-3 py-1 font-semibold text-red">
+            Critical/High: <b>{criticalCount}</b>
+          </span>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-4 rounded-[6px] border border-red/30 bg-[#FFF5F3] px-4 py-3 text-xs text-red font-medium">
+          {error}
+        </div>
+      )}
+      {alerts.length > 0 && (
+        <div className="mb-4 rounded-[8px] border border-[#EED7B3] bg-[#FFF9ED] px-4 py-3">
+          <p className="text-xs font-extrabold text-[#8A5314]">New automatic review alerts ({alerts.length})</p>
+          <p className="mt-1 text-xs text-mute">{alerts[0].message}</p>
+        </div>
+      )}
+      <section className="mb-5 rounded-[8px] border border-[#CBD8CC] bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-ink">Automatic real-satellite fetch</h2>
+            <p className="text-xs text-mute">Provider discovery runs once daily after 06:00 IST. This setting controls review checks.</p>
           </div>
-          <Card><EvidencePanel d={selected} />
-            {selected.petition && <div className="mt-4 border-t border-line pt-4 text-sm"><p className="font-bold text-ink">Citizen petition · {selected.petition.code}</p><p className="mt-2 leading-relaxed text-mute">{selected.petition.description}</p><p className="mt-2 text-xs text-mute">Citizen-submitted allegation; not a verified fact.</p></div>}
-          </Card>
-          <Card>
-            <div className="mb-3 flex items-center justify-between gap-2"><h2 className="font-bold text-ink">Collected case evidence</h2><span className="font-mono text-xs text-mute">{caseEvidence.length} files</span></div>
-            {caseEvidence.length ? <ul className="divide-y divide-line">{caseEvidence.map((item: any) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
-              <div className="min-w-0"><p className="truncate text-sm font-semibold text-ink">{item.original_filename}</p><p className="mt-1 text-xs text-mute">{item.evidence_type} · {item.captured_at || "Capture date not supplied"} · {item.uploader_name || "Admin uploader"}</p>{item.latitude != null && <p className="mt-1 font-mono text-[10px] text-mute">{Number(item.latitude).toFixed(5)}, {Number(item.longitude).toFixed(5)}</p>}</div>
-              <Button v="ghost" className="!min-h-[36px] !px-3 text-xs" onClick={() => download(`/api/admin/evidence/${item.id}/download`, item.original_filename)}>Download</Button>
-            </li>)}</ul> : <EmptyState>No additional admin evidence has been attached to this case.</EmptyState>}
-          </Card>
-        </section>
-        <Card>
-          <p className="text-xs font-bold uppercase tracking-wider text-gov">Official record</p><h2 className="mb-4 mt-1 text-xl font-extrabold">Officer decision</h2>
-          <FormField label="Decision"><select value={form.decision} onChange={setField("decision")}>{DECISIONS.map(value => <option key={value}>{value}</option>)}</select></FormField>
-          <FormField label="Reason / remarks" hint="Record the basis for this decision. A reason is required for every outcome.">
-            <textarea rows={4} maxLength={2000} value={form.remarks} onChange={setField("remarks")} placeholder="Summarise evidence reviewed and the reason for this outcome…" />
-            <span className="mt-1 block text-right font-mono text-xs text-mute">{form.remarks.length}/2000</span>
-          </FormField>
-          {needsPermit && <FormField label="Permit / record reference (required)"><input value={form.permit_reference} onChange={setField("permit_reference")} placeholder="Enter the official reference" /></FormField>}
-          {needsAction && <FormField label="Recommended department action (required)"><input value={form.recommended_action} onChange={setField("recommended_action")} placeholder="Describe the recommended next step" /></FormField>}
-          <FileUploader label="Field photo (optional)" onFile={uploadFieldPhoto} />
-          <p className="mb-3 text-xs leading-relaxed text-mute">Save will attach your name, decision, reason and timestamp to the official case record.</p>
-          <Button className="w-full" disabled={!canSave || saving} onClick={() => setConfirmOpen(true)}>{saving ? "Saving…" : "Review and save decision"}</Button>
-          {!canSave && <p className="mt-2 text-xs text-mute">Enter a reason{needsPermit ? " and permit/record reference" : needsAction ? " and recommended action" : ""} to continue.</p>}
-          <Button v="ghost" className="mt-2 w-full" onClick={() => download(`/api/reports/${selected.case_id}/pdf`, `case_${selected.case_id}.pdf`)}>Download PDF report</Button>
-        </Card>
-      </> : <div className="xl:col-span-2"><EmptyState>No cases are assigned to this account.</EmptyState></div>}
-    </div>
-
-    {confirmOpen && selected && <div className="fixed inset-0 z-[1500] grid place-items-center bg-ink/50 p-4" role="presentation">
-      <section role="dialog" aria-modal="true" aria-labelledby="decision-confirm-title" className="w-full max-w-lg rounded-xl border border-line bg-white p-5 shadow-xl">
-        <p className="text-xs font-bold uppercase tracking-wider text-gov">Confirm official action</p>
-        <h2 id="decision-confirm-title" className="mt-1 text-xl font-extrabold">Record this decision?</h2>
-        <p className="mt-3 text-sm leading-relaxed text-mute">You are recording <b className="text-ink">{form.decision}</b> for <b className="text-ink">CASE-{selected.case_id}</b>. This becomes part of the case record.</p>
-        <div className="mt-3 border-l-2 border-gov bg-paper p-3 text-sm leading-relaxed text-ink">{form.remarks}</div>
-        <div className="mt-5 flex justify-end gap-2"><Button v="ghost" disabled={saving} onClick={() => setConfirmOpen(false)}>Go back</Button><Button disabled={saving} onClick={saveDecision}>{saving ? "Saving…" : "Confirm decision"}</Button></div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs font-semibold text-mute">
+              Review interval
+              <select
+                value={frequency.frequency_minutes}
+                onChange={(e) => setFrequency({ ...frequency, frequency_minutes: Number(e.target.value) })}
+                className="mt-1 block min-h-[36px] text-sm"
+              >
+                <option value={15}>Every 15 minutes</option>
+                <option value={60}>Every hour</option>
+                <option value={360}>Every 6 hours</option>
+                <option value={1440}>Once a day</option>
+              </select>
+            </label>
+            <label className="flex min-h-[36px] items-center gap-2 px-2 text-xs font-semibold text-ink">
+              <input type="checkbox" checked={frequency.enabled} onChange={(e) => setFrequency({ ...frequency, enabled: e.target.checked })} />
+              Enabled
+            </label>
+            <Button disabled={savingFrequency} onClick={saveFrequency}>{savingFrequency ? "Saving..." : "Save"}</Button>
+          </div>
+        </div>
       </section>
-    </div>}
-  </main>;
+
+      {/* Filter and Search Bar */}
+      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between mb-5 bg-white p-3 rounded-[8px] border border-[#CBD8CC]">
+        <div className="flex flex-wrap gap-1.5 w-full sm:w-auto">
+          {["All", "Pending", "Critical", "High", "Moderate", "Low"].map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={`rounded-[6px] px-3 py-1.5 text-xs font-semibold transition ${
+                filter === f
+                  ? "bg-gov text-white font-bold shadow-sm"
+                  : "border border-line bg-[#FAF8F4] text-mute hover:text-ink hover:bg-white"
+              }`}
+            >
+              {f === "Pending" ? "Awaiting Decision" : f}
+            </button>
+          ))}
+        </div>
+
+        <div className="w-full sm:w-64">
+          <input
+            type="search"
+            placeholder="Search case # or type..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full text-xs !min-h-[36px]"
+          />
+        </div>
+      </div>
+
+      {/* Cases Queue List */}
+      {loading ? (
+        <div className="text-center py-12 text-sm text-mute">Loading case register…</div>
+      ) : filteredCases.length === 0 ? (
+        <EmptyState icon={<IconFileDoc size={28} />}>
+          <p className="font-bold text-ink">No cases matching this criteria.</p>
+          <p className="text-xs text-mute mt-1">Adjust filters or search parameters above.</p>
+        </EmptyState>
+      ) : (
+        <div className="space-y-3">
+          {filteredCases.map((item) => {
+            const hasDecision = Boolean(item.decision);
+            return (
+              <div
+                key={item.case_id}
+                className="rounded-[10px] border border-[#CBD8CC] bg-white p-4 sm:p-5 hover:border-g2 transition flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                    <span className="font-mono text-xs font-extrabold text-gov">
+                      CASE-{item.case_id}
+                    </span>
+                    <AttentionBadge level={item.risk_level} />
+                    <StatusBadge status={item.case_status} />
+                    {item.petition?.code && (
+                      <span className="text-[11px] font-mono text-mute bg-[#FAF8F4] border border-line rounded px-1.5 py-0.5">
+                        {item.petition.code}
+                      </span>
+                    )}
+                  </div>
+
+                  <h3 className="text-base font-extrabold text-ink">
+                    {item.activity_type || item.change_type}
+                  </h3>
+
+                  <p className="text-xs text-mute mt-1">
+                    Disturbed Area: <b>{item.area_hectares ?? 2.8} ha</b> · Algorithm Confidence:{" "}
+                    <b>{item.confidence ?? 86}%</b>
+                  </p>
+
+                  {item.petition?.description && (
+                    <p className="text-xs text-[#475569] mt-2 line-clamp-1 italic bg-[#FAF8F4] p-2 rounded border border-[#E2DDCF]">
+                      Citizen observation: "{item.petition.description}"
+                    </p>
+                  )}
+
+                  {hasDecision && (
+                    <div className="mt-2 text-xs text-g1 font-semibold flex items-center gap-1.5">
+                      <span className="text-g2">✓</span> Decision Recorded: <b>{item.decision}</b>
+                    </div>
+                  )}
+                </div>
+
+                <div className="shrink-0 flex sm:flex-col gap-2">
+                  <Button
+                    v={hasDecision ? "ghost" : "primary"}
+                    className="!min-h-[40px] text-xs font-bold w-full sm:w-auto"
+                    onClick={() => navigate(`/case/${item.id}`)}
+                  >
+                    {hasDecision ? "Review Dossier →" : "Review & Decide →"}
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </main>
+  );
 }

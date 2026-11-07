@@ -1,142 +1,400 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { api, API, download, role } from "../api";
 import MapView from "../MapView";
-import { Button, Card, Disclaimer, EmptyState, EvidencePanel, NdviScale, SkeletonLoader, StatusBadge, Tabs } from "../ui";
+import {
+  Button,
+  FormField,
+  FileUploader,
+  PlainLanguageAiCard,
+  AttentionBadge,
+  StatusBadge,
+  SkeletonLoader,
+  Disclaimer,
+} from "../ui";
+import {
+  IconShieldCheck,
+  IconSatellite,
+  IconMapSheet,
+  IconFileDoc,
+  IconPin,
+  IconGovPillar,
+} from "../icons";
+
+const OFFICER_DECISIONS = [
+  "Legal / Permitted",
+  "Potential Violation",
+  "False Alarm",
+  "Need More Checking",
+];
 
 export default function CaseDetail() {
   const { id } = useParams();
-  const [detection, setDetection] = useState<any>();
+  const navigate = useNavigate();
+  const currentRole = role();
+
+  const [detection, setDetection] = useState<any>(null);
+  const [officerCase, setOfficerCase] = useState<any>(null);
   const [scenes, setScenes] = useState<any[]>([]);
-  const [view, setView] = useState("after");
-  const [officerCase, setOfficerCase] = useState<any>();
-  const [caseEvidence, setCaseEvidence] = useState<any[]>([]);
+  const [view, setView] = useState("after"); // 'before' | 'after'
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [sceneError, setSceneError] = useState("");
+
+  const [decision, setDecision] = useState(OFFICER_DECISIONS[1]); // 'Potential Violation'
+  const [remarks, setRemarks] = useState("");
+  const [fieldPhoto, setFieldPhoto] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [decisionSubmitted, setDecisionSubmitted] = useState(false);
 
   useEffect(() => {
-    setDetection(undefined);
+    setLoading(true);
     setError("");
-    setSceneError("");
-    api.get(`/api/change-detections/${id}`)
-      .then(response => setDetection(response.data))
-      .catch(() => setError("Case evidence is unavailable. Return to the map and try again."));
-    api.get("/api/scenes")
-      .then(response => setScenes(response.data))
-      .catch(() => setSceneError("Satellite scene metadata is temporarily unavailable."));
-    if (role()) {
-      api.get("/api/officer/cases")
-        .then(response => {
-          const item = response.data.find((entry: any) => String(entry.id) === String(id));
-          setOfficerCase(item);
-          if (item?.case_id) {
-            api.get(`/api/admin/cases/${item.case_id}/evidence`)
-              .then(evidenceResponse => setCaseEvidence(evidenceResponse.data))
-              .catch(() => setCaseEvidence([]));
-          } else {
-            setCaseEvidence([]);
+
+    Promise.allSettled([
+      api.get(`/api/change-detections/${id}`),
+      api.get("/api/officer/cases"),
+      api.get("/api/scenes"),
+    ])
+      .then(([detRes, caseRes, sceneRes]) => {
+        if (detRes.status === "fulfilled") {
+          setDetection(detRes.value.data);
+        } else {
+          setError("Could not load case observation.");
+        }
+
+        if (caseRes.status === "fulfilled" && Array.isArray(caseRes.value.data)) {
+          const matched = caseRes.value.data.find(
+            (c: any) => String(c.id) === String(id) || String(c.case_id) === String(id)
+          );
+          if (matched) {
+            setOfficerCase(matched);
+            if (matched.decision) {
+              setDecision(matched.decision);
+              setRemarks(matched.remarks || "");
+            }
           }
-        })
-        .catch(() => setOfficerCase(undefined));
-    } else {
-      setOfficerCase(undefined);
-      setCaseEvidence([]);
-    }
+        }
+
+        if (sceneRes.status === "fulfilled") {
+          setScenes(Array.isArray(sceneRes.value.data) ? sceneRes.value.data : []);
+        }
+      })
+      .finally(() => setLoading(false));
   }, [id]);
 
-  if (!detection) return <main className="page-enter mx-auto max-w-3xl p-6">
-    {error ? <EmptyState>{error}</EmptyState> : <SkeletonLoader />}
-    <Link to="/map" className="mt-4 inline-flex min-h-[40px] items-center font-semibold text-g1 underline underline-offset-2">Back to public map</Link>
-  </main>;
+  const handleSubmitDecision = async () => {
+    if (!remarks.trim()) {
+      setError("Please add an officer verification remark before submitting.");
+      return;
+    }
+    if (!officerCase?.case_id) {
+      setError("Associated case identifier missing.");
+      return;
+    }
 
-  const scene = scenes.find(item => item.image_type === view);
-  const gis = detection.gis;
+    setSaving(true);
+    setError("");
 
-  return <main className="page-enter mx-auto max-w-[1280px] p-4 sm:p-6">
-    <div className="mb-4 flex flex-wrap items-end justify-between gap-3 border-b border-line pb-4">
-      <div>
-        <Link to="/map" className="text-xs font-semibold text-g2 underline underline-offset-2">Public map</Link>
-        <p className="mt-3 text-xs font-bold uppercase tracking-wider text-mute">Preliminary finding · officer review required</p>
-        <h1 className="mt-1 text-2xl font-extrabold sm:text-3xl">CASE-{detection.id}: {detection.change_type}</h1>
+    try {
+      await api.patch(`/api/officer/cases/${officerCase.case_id}/decision`, {
+        decision,
+        remarks: remarks.trim(),
+      });
+
+      if (fieldPhoto) {
+        try {
+          const fd = new FormData();
+          fd.append("f", fieldPhoto);
+          await api.post(`/api/officer/cases/${officerCase.case_id}/field-report`, fd);
+        } catch {
+          // non-blocking
+        }
+      }
+
+      setDecisionSubmitted(true);
+      const updated = await api.get(`/api/officer/cases/${officerCase.case_id}`);
+      setOfficerCase(updated.data);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Could not record decision. Please retry.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <main className="mx-auto max-w-4xl px-4 py-8">
+        <SkeletonLoader />
+      </main>
+    );
+  }
+
+  if (!detection) {
+    return (
+      <main className="mx-auto max-w-2xl px-4 py-12 text-center">
+        <p className="text-base font-bold text-red">Case #{id} could not be located in register.</p>
+        <Link to="/officer" className="mt-4 inline-block text-xs font-bold text-g2 underline">
+          Return to Officer Cases
+        </Link>
+      </main>
+    );
+  }
+
+  const scene = scenes.find((s) => s.image_type === view);
+  const petition = officerCase?.petition;
+
+  return (
+    <main className="page-enter mx-auto max-w-6xl px-4 py-6 sm:py-8">
+      {/* Top Breadcrumb & Status Ribbon */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 pb-3 border-b border-[#D8D2C4]">
+        <div className="flex items-center gap-2">
+          <Link
+            to={currentRole === "officer" || currentRole === "admin" ? "/officer" : "/map"}
+            className="text-xs font-bold text-g2 hover:underline"
+          >
+            ← {currentRole === "officer" || currentRole === "admin" ? "Officer Queue" : "Observation Map"}
+          </Link>
+          <span className="text-mute font-mono">/</span>
+          <span className="font-mono text-xs font-extrabold text-ink">
+            CASE-{officerCase?.case_id || detection.id}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <AttentionBadge level={detection.risk_level} />
+          <StatusBadge status={officerCase?.case_status || detection.status} />
+          {officerCase?.case_id && (
+            <Button
+              v="ghost"
+              className="!min-h-[34px] !px-3 text-xs gap-1.5"
+              onClick={() =>
+                download(`/api/reports/${officerCase.case_id}/pdf`, `case_${officerCase.case_id}.pdf`)
+              }
+            >
+              <IconFileDoc size={14} />
+              <span>Audit PDF</span>
+            </Button>
+          )}
+        </div>
       </div>
-      {role() && <Button v="ghost" onClick={() => download(`/api/reports/${officerCase?.case_id || id}/pdf`, `case_${id}.pdf`)}>Download PDF report</Button>}
-    </div>
-    {sceneError && <p className="mb-3 rounded border border-[#E9D9A8] bg-[#FFF9E9] px-3 py-2 text-sm text-[#6B4B00]" role="status">{sceneError}</p>}
 
-    <Tabs tabs={["Satellite Evidence", "Change Analysis", "GIS Context", "Citizen Petition", "Officer Decision"]}>
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div>
-          <div className="relative h-[360px] overflow-hidden rounded-xl border border-line bg-white sm:h-[480px]">
-            <div className="absolute right-3 top-3 z-[500] flex gap-1 rounded-md border border-line bg-white p-1 shadow-sm">
-              {["before", "after"].map(value => <Button key={value} v={view === value ? "primary" : "ghost"} className="!min-h-[36px] capitalize !px-3 text-xs" onClick={() => setView(value)} aria-pressed={view === value}>{value}</Button>)}
+      {error && (
+        <div className="mb-4 rounded-[6px] border border-red/30 bg-[#FFF5F3] px-4 py-3 text-xs text-red font-medium">
+          {error}
+        </div>
+      )}
+
+      {/* DECISION SUBMITTED CONFIRMATION BANNER */}
+      {decisionSubmitted && (
+        <div className="mb-6 rounded-[8px] border border-g2/40 bg-[#EFF7F0] p-4 text-g1 flex items-start justify-between gap-3 shadow-sm">
+          <div className="flex items-start gap-2.5">
+            <span className="text-g2 mt-0.5">
+              <IconShieldCheck size={18} />
+            </span>
+            <div>
+              <p className="text-sm font-extrabold text-g1">
+                Official Determination Recorded & Citizen Notified
+              </p>
+              <p className="text-xs text-[#28573B] mt-0.5">
+                Outcome: <b>"{decision}"</b>. Citizen tracking status updated in live register.
+              </p>
             </div>
-            <MapView dets={[detection]} selected={detection.id} overlay={scene && { url: API + scene.preview, bounds: scene.bounds }} />
           </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            {(["before", "after"] as const).map(label => {
-              const observation = detection.satellite_observations?.[label];
-              return <div key={label} className="border border-line bg-white p-3">
-                <p className="text-xs font-bold uppercase tracking-wider text-mute">{label === "before" ? "Baseline observation" : "Recent observation"}</p>
-                {observation ? <>
-                  <p className="mt-1 font-mono text-sm font-bold text-ink">{observation.scene_date}</p>
-                  <p className="mt-1 text-xs text-mute">{observation.source} · {observation.sensor}</p>
-                  <p className="mt-1 text-xs text-mute">{observation.cloud_cover_percent ?? "Unknown"}% cloud · {observation.spatial_resolution || "Resolution not recorded"}</p>
-                  <p className="mt-1 text-[10px] text-mute">{observation.study_area_name}</p>
-                </> : <p className="mt-2 text-xs text-mute">Scene metadata unavailable.</p>}
-              </div>;
-            })}
+          <Button
+            v="ghost"
+            className="!min-h-[30px] !px-2.5 text-xs font-bold border-g2/30"
+            onClick={() => setDecisionSubmitted(false)}
+          >
+            Close
+          </Button>
+        </div>
+      )}
+
+      {/* ALL-IN-ONE CASE REVIEW (NO BOX OVERLOAD) */}
+      <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+        {/* LEFT COLUMN: Satellite Observation & AI Analysis */}
+        <div className="space-y-6">
+          <div className="overflow-hidden rounded-[10px] border border-[#CBD8CC] bg-white shadow-sm">
+            <div className="p-3.5 border-b border-line bg-[#F8F6F0] flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <IconSatellite size={16} className="text-g1" />
+                <span className="text-xs font-bold text-ink">Remote Sensing Comparison</span>
+              </div>
+              <div className="flex items-center gap-1 bg-white p-1 rounded-[6px] border border-line">
+                <Button
+                  v={view === "before" ? "primary" : "ghost"}
+                  className="!min-h-[28px] !px-2.5 text-xs capitalize"
+                  onClick={() => setView("before")}
+                >
+                  Baseline
+                </Button>
+                <Button
+                  v={view === "after" ? "primary" : "ghost"}
+                  className="!min-h-[28px] !px-2.5 text-xs capitalize"
+                  onClick={() => setView("after")}
+                >
+                  Recent Pass
+                </Button>
+              </div>
+            </div>
+
+            <div className="relative h-[320px] sm:h-[380px]">
+              <MapView
+                dets={[detection]}
+                selected={detection.id}
+                overlay={scene ? { url: API + scene.preview, bounds: scene.bounds } : undefined}
+              />
+              <div className="absolute bottom-2 left-2 z-[500] bg-white/95 border border-line rounded px-2.5 py-1 text-[11px] font-bold text-ink shadow-sm">
+                Optical Frame: <span className="capitalize text-g2">{view}</span> (Polygon highlighted)
+              </div>
+            </div>
+          </div>
+
+          {/* Plain-Language AI Card (Clean environmental card) */}
+          <PlainLanguageAiCard detection={detection} />
+        </div>
+
+        {/* RIGHT COLUMN: Citizen Ground Complaint & Officer Action */}
+        <div className="space-y-6">
+          {/* Citizen Observation */}
+          <div className="rounded-[10px] border border-[#CBD8CC] bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-line mb-3">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-g2 flex items-center gap-1">
+                <IconPin size={13} />
+                Citizen Observation
+              </span>
+              {petition?.code && (
+                <span className="font-mono text-xs font-bold text-mute bg-[#FAF8F4] px-2 py-0.5 rounded border border-line">
+                  {petition.code}
+                </span>
+              )}
+            </div>
+
+            {petition ? (
+              <div className="space-y-3 text-xs">
+                <div>
+                  <span className="text-mute block text-[11px]">Reported Disturbance:</span>
+                  <p className="text-sm font-bold text-ink mt-0.5">{petition.category}</p>
+                </div>
+
+                <div>
+                  <span className="text-mute block text-[11px]">Citizen Description:</span>
+                  <p className="mt-1 bg-[#FAF8F4] p-3 rounded-[6px] border border-[#DDD8CC] text-ink leading-relaxed">
+                    "{petition.description}"
+                  </p>
+                </div>
+
+                {petition.village_city && (
+                  <p className="text-mute text-[11px]">
+                    Cadastral: <b>{petition.village_city}, {petition.district}</b>
+                  </p>
+                )}
+
+                {petition.photo_url && (
+                  <div className="pt-2 border-t border-line">
+                    <span className="text-mute block mb-1 text-[11px] font-semibold">
+                      Citizen Field Photograph:
+                    </span>
+                    <a
+                      href={petition.photo_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block group relative overflow-hidden rounded-[6px] border border-line"
+                    >
+                      <img
+                        src={petition.photo_url}
+                        alt="Citizen ground evidence"
+                        className="h-40 w-full object-cover group-hover:scale-105 transition"
+                      />
+                      <span className="absolute bottom-2 right-2 bg-black/75 text-white text-[10px] px-2 py-0.5 rounded">
+                        Expand photo ↗
+                      </span>
+                    </a>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-mute py-2">
+                Automated detection pass. No citizen complaint is directly attached to this boundary.
+              </p>
+            )}
+          </div>
+
+          {/* OFFICER ACTION PANEL */}
+          <div className="rounded-[10px] border border-[#CBD8CC] bg-white p-5 shadow-sm border-t-4 border-t-gov">
+            <div className="pb-3 border-b border-line mb-4">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-gov flex items-center gap-1.5">
+                <IconShieldCheck size={14} />
+                Field Officer Sign-Off
+              </span>
+              <h2 className="text-lg font-extrabold text-ink mt-0.5">Record Determination</h2>
+            </div>
+
+            {/* Choose Decision */}
+            <div className="mb-4">
+              <span className="block text-xs font-bold text-ink mb-2">
+                Official Case Outcome
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {OFFICER_DECISIONS.map((d) => {
+                  const isSelected = decision === d;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setDecision(d)}
+                      className={`p-2.5 rounded-[6px] border text-xs font-bold text-center transition ${
+                        isSelected
+                          ? "border-gov bg-[#EBF0F6] text-gov ring-2 ring-gov/20"
+                          : "border-[#D6DEC6] bg-[#FAF8F4] text-mute hover:text-ink hover:bg-white"
+                      }`}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Add Remark */}
+            <FormField
+              label="Officer Inspection Remark (Mandatory)"
+              hint="Document ground findings, permit status, or next steps. This is published on the citizen dossier."
+            >
+              <textarea
+                rows={3}
+                required
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                placeholder="e.g. Site visited. Felling halted. Notice issued under Forest Act section 26..."
+                className="w-full text-xs"
+              />
+            </FormField>
+
+            {/* Field Photo Upload */}
+            <FileUploader
+              onFile={setFieldPhoto}
+              label="Attach Field Inspection Photo (Optional)"
+              hint="Upload ground image taken during officer site inspection."
+            />
+
+            {fieldPhoto && (
+              <p className="text-xs text-g1 font-semibold mb-3">
+                ✓ Field photo selected: {fieldPhoto.name}
+              </p>
+            )}
+
+            <Button
+              v="primary"
+              className="w-full !min-h-[46px] text-sm font-bold bg-gov hover:bg-[#142640]"
+              disabled={saving || !remarks.trim()}
+              onClick={handleSubmitDecision}
+            >
+              {saving ? "Signing and Recording…" : "Submit Official Decision"}
+            </Button>
           </div>
         </div>
-        <Card><EvidencePanel d={detection} /></Card>
       </div>
-
-      <Card>
-        <p className="mb-4 text-sm leading-relaxed text-mute">Satellite indices provide evidence signals for review; they do not determine legality or responsibility.</p>
-        {[["ΔNDVI (vegetation)", detection.ndvi_difference], ["ΔNDWI (water)", detection.ndwi_difference], ["ΔNDBI (built-up)", detection.ndbi_difference], ["ΔBSI (bare soil)", detection.bsi_difference]].map(([label, value]: any) =>
-          <div key={label} className="mb-5"><div className="mb-2 text-sm font-semibold text-ink">{label}</div><NdviScale v={value} /></div>
-        )}
-        <p className="border-t border-line pt-3 text-sm leading-relaxed text-ink">{detection.why_flagged}</p>
-        <Disclaimer />
-      </Card>
-
-      <Card>
-        <h2 className="mb-4 text-lg font-bold">Geographic context</h2>
-        {gis ? <dl className="grid grid-cols-1 gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
-          <dt className="text-mute">Nearest water</dt><dd className="font-mono font-semibold">{gis.distance_to_water_m} m</dd>
-          <dt className="text-mute">Nearest road</dt><dd className="font-mono font-semibold">{gis.distance_to_road_m} m</dd>
-          <dt className="text-mute">Nearest forest</dt><dd className="font-mono font-semibold">{gis.distance_to_forest_m} m</dd>
-          <dt className="text-mute">Near protected area</dt><dd className="font-semibold">{gis.near_protected_area ? "Yes" : "No"}</dd>
-          <dt className="text-mute">Existing land-use class</dt><dd className="font-semibold">{gis.existing_lulc_class}</dd>
-          {gis.explanation && <><dt className="text-mute">Context notes</dt><dd className="sm:col-span-1">{gis.explanation}</dd></>}
-        </dl> : <EmptyState>No GIS context is available for this case.</EmptyState>}
-      </Card>
-
-      <Card>
-        <h2 className="mb-3 text-lg font-bold">Citizen submission</h2>
-        {officerCase?.petition ? <>
-          <p className="font-mono text-sm font-semibold text-gov">{officerCase.petition.code}</p>
-          <p className="mt-2 text-sm font-semibold text-ink">{officerCase.petition.category}</p>
-          <p className="mt-1 text-sm leading-relaxed text-mute">{officerCase.petition.description}</p>
-          <p className="mt-3 border-l-2 border-accent bg-paper px-3 py-2 text-xs text-mute">Citizen allegation as reported; not a verified fact.</p>
-        </> : <EmptyState>Petition details are visible to signed-in officers.</EmptyState>}
-        {role() && officerCase?.case_id && <div className="mt-5 border-t border-line pt-4">
-          <h3 className="font-bold">Collected evidence</h3>
-          {caseEvidence.length ? <ul className="mt-2 divide-y divide-line">{caseEvidence.map((item: any) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
-            <span className="min-w-0"><span className="block truncate text-sm font-semibold">{item.original_filename}</span><span className="mt-1 block text-xs text-mute">{item.evidence_type} · {item.captured_at || "Capture date not supplied"} · uploaded {item.uploaded_at ? new Date(item.uploaded_at).toLocaleString() : "date unavailable"}</span></span>
-            <Button v="ghost" className="!min-h-[36px] !px-3 text-xs" onClick={() => download(`/api/admin/evidence/${item.id}/download`, item.original_filename)}>Download</Button>
-          </li>)}</ul> : <p className="mt-2 text-sm text-mute">No additional field evidence has been attached.</p>}
-        </div>}
-      </Card>
-
-      <Card>
-        <h2 className="mb-3 text-lg font-bold">Officer decision</h2>
-        <StatusBadge status={detection.status} />
-        {officerCase?.decision ? <>
-          <p className="mt-4 text-sm"><b>Recorded decision:</b> {officerCase.decision}</p>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-mute">{officerCase.remarks}</p>
-        </> : <p className="mt-3 text-sm leading-relaxed text-mute">No final officer decision is recorded yet. Field verification may be required.</p>}
-        <Disclaimer />
-      </Card>
-    </Tabs>
-  </main>;
+    </main>
+  );
 }

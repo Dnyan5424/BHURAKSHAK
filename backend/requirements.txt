@@ -6,5 +6,8 @@ python-multipart
 numpy
 scipy
 shapely
+pyproj
 reportlab
 rasterio
+pystac-client
+planetary-computer

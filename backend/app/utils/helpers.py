@@ -36,10 +36,23 @@ CAT2PORTAL = {
     "Other": "general",
     "Other environmental issue": "general",
 }
+ACTIVITY_LABELS = {
+    "Possible vegetation loss": "Deforestation / tree-cover loss",
+    "Possible bare soil / excavation": "Illegal mining / excavation",
+    "Possible built-up expansion": "Unpermitted construction",
+    "Possible water-body change": "Water-body alteration",
+}
 def D(d,g=None):
     o={"id":d.id,"change_type":d.change_type,"area_hectares":d.area_hectares,"confidence":d.confidence,"risk_score":d.risk_score,"risk_level":d.risk_level,
        "polygon":json.loads(d.polygon_geojson),"status":d.status,"ndvi_difference":d.ndvi_difference,"ndwi_difference":d.ndwi_difference,
        "ndbi_difference":d.ndbi_difference,"bsi_difference":d.bsi_difference,"why_flagged":d.evidence,"disclaimer":DISCLAIMER}
+    try:
+        o["evidence_calculations"] = json.loads(d.evidence) if d.evidence and d.evidence.startswith("{") else None
+        if o["evidence_calculations"]:
+            o["why_flagged"] = o["evidence_calculations"].get("summary", d.evidence)
+    except json.JSONDecodeError:
+        o["evidence_calculations"] = None
+    o["activity_type"] = ACTIVITY_LABELS.get(d.change_type, d.change_type)
     if g:o["gis"]={k:getattr(g,k) for k in("distance_to_water_m","distance_to_road_m","distance_to_forest_m","near_protected_area","existing_lulc_class","explanation")}
     return o
 def case_out(c,s):

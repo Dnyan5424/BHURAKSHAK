@@ -12,21 +12,21 @@ P=[("forest_loss","Forest Department","PARIVESH","https://parivesh.nic.in","Loca
 ("construction","Municipal Corporation / Town Planning","Local body grievance","https://www.mahaonline.gov.in","Address, photos"),("water_encroachment","Revenue / Irrigation Dept","Local revenue office","https://aaplesarkar.mahaonline.gov.in","Location, survey no."),
 ("environmental_clearance","MoEFCC / SPCB","PARIVESH","https://parivesh.nic.in","Project details"),("general","CPGRAMS","CPGRAMS","https://pgportal.gov.in","Complaint details")]
 for c,d,n,u,r in P:s.add(Portal(category=c,department_name=d,portal_name=n,portal_url=u,required_documents=r,last_verified_date="Verify before use"))
-rng=np.random.default_rng(1);N=120
+rng=np.random.default_rng(1);N=36
 def base():return {k:np.full((N,N),v,"float32")+rng.normal(0,.005,(N,N)).astype("float32") for k,v in dict(blue=.06,green=.10,red=.08,nir=.5,swir=.2).items()}
 bef,aft=base(),base()
 def patch(r0,c0,h,w,**v):
     for k,x in v.items():aft[k][r0:r0+h,c0:c0+w]=x
-patch(10,10,14,20,nir=.25,red=.15,swir=.22)
-patch(50,60,10,14,nir=.45,red=.10,swir=.5)
-patch(90,20,16,20,nir=.42,red=.11,swir=.45)
+patch(8,8,8,10,nir=.25,red=.15,swir=.22)
 for t,x in(("before",bef),("after",aft)):np.savez(f"{BASE}/data/raw/demo_{t}.npz",**x)
+area_geometry={"type":"Polygon","coordinates":[[[73.85,18.55],[73.85324,18.55],[73.85324,18.54676],[73.85,18.54676],[73.85,18.55]]]}
 for t,dt in(("before","2024-01-15"),("after","2025-01-20")):
-    s.add(Scene(study_area_name="DEMO Study Area (synthetic)",image_type=t,scene_date=dt,source="SIMULATED (Sentinel-2-like)",sensor="Synthetic",cloud_cover_percent=2,spatial_resolution="10 m",image_url=f"{BASE}/data/raw/demo_{t}.npz"))
+    s.add(Scene(study_area_name="DEMO Small Area",image_type=t,scene_date=dt,source="SIMULATED (Sentinel-2-like)",sensor="Synthetic",cloud_cover_percent=2,spatial_resolution="10 m",image_url=f"{BASE}/data/raw/demo_{t}.npz",provider_metadata=json.dumps({"geometry":area_geometry,"analysis_origin":[73.85,18.55]})))
+s.add(MonitoringArea(name="DEMO Small Area",district="Pune",area_type="demo",geometry_geojson=json.dumps(area_geometry),area_sq_km=.1,source="Repository demo boundary",boundary_version="demo-1",max_cloud_cover=30))
 s.commit();o=(73.85,18.55);px=9e-5
 def at(r,c,dx=0,dy=0):return [o[0]+c*px+dx,o[1]-r*px+dy]
 far=[o[0]+.05,o[1]+.05]
-L={"water":[at(17,20,.001),far],"road":[at(55,67,0,.0008),far],"forest":[at(98,30,.0015),far],"protected":[at(98,30,.0015),far]}
+L={"water":[at(17,20,.001),far],"road":[at(12,12,0,.0008),far],"forest":[at(12,12,.0015),far],"protected":[at(12,12,.0015),far]}
 json.dump({**L,"origin":list(o)},open(f"{BASE}/data/raw/demo_layers.json","w"))
 sv.run_detection(s,bef,aft,o,L,1,2)
 SPEC={"Possible vegetation loss":(86,"High",38+24,"Needs verification","Needs verification","Submitted","Tree cutting or vegetation loss","Trees appear removed near the lake edge (SIMULATED)."),
